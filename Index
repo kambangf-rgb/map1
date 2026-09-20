@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>圃場オルソ画像</title>
+
+<!--
+  ============================================================
+  使い方
+  ------------------------------------------------------------
+  1. このファイルと result_cog.tif を同じフォルダに置く
+  2. GitHub のリポジトリに push し、Settings → Pages で公開
+  3. https://<ユーザー名>.github.io/<リポジトリ名>/ を顧客に渡す
+
+  同一オリジンなので CORS 設定は不要です。
+  別のストレージに置く場合は、下の COG.url を絶対URLに変え、
+  そのストレージ側で CORS（allowedHeaders に range、
+  exposeHeaders に Content-Range / Content-Length）を許可してください。
+
+  圃場ごとに複製する場合は、下の CONFIG だけ書き換えます。
+  ============================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css">
+
+<style>
+  :root{
+    --panel:#F7F7F4;
+    --ink:#1B2220;
+    --muted:#69726E;
+    --rule:#D5D8D0;
+    --signal:#2C5F4F;
+    --sans:"IBM Plex Sans JP",system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
+    --mono:"IBM Plex Mono","SFMono-Regular",Menlo,Consolas,monospace;
+    box-sizing:border-box;
+  }
+  *,*::before,*::after{box-sizing:inherit}
+  html,body{height:100%;margin:0}
+  body{font-family:var(--sans);color:var(--ink);background:#DDE0DA;overflow:hidden}
+
+  #map{position:absolute;inset:0;background:#DDE0DA}
+  #map:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
+
+  /* ---- panel ---- */
+  #panel{
+    position:absolute;z-index:5;
+    top:calc(14px + env(safe-area-inset-top,0px));left:14px;width:296px;
+    background:var(--panel);border:1px solid var(--rule);
+    box-shadow:0 2px 14px rgba(27,34,32,.14);
+  }
+  #head{padding:16px 18px 14px;display:flex;gap:12px;align-items:flex-start}
+  #head .txt{min-width:0;flex:1}
+  h1{font-size:17px;font-weight:600;margin:0;line-height:1.4;letter-spacing:-.01em}
+  #sub{font-size:12.5px;color:var(--muted);margin:2px 0 0}
+  #toggle{
+    flex:none;width:28px;height:28px;margin:-2px -4px 0 0;padding:0;
+    background:none;border:1px solid var(--rule);color:var(--muted);
+    font-family:var(--mono);font-size:15px;line-height:1;cursor:pointer;display:none;
+  }
+  #toggle:hover{border-color:var(--ink);color:var(--ink)}
+
+  #body{border-top:1px solid var(--rule)}
+  #panel.shut #body{display:none}
+
+  dl{margin:0;padding:12px 18px 4px}
+  dl div{display:flex;justify-content:space-between;gap:14px;padding:4px 0;font-size:13px}
+  dt{color:var(--muted);flex:none}
+  dd{margin:0;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right;word-break:break-all}
+
+  .ctl{padding:12px 18px;border-top:1px solid var(--rule)}
+  .ctl h2{font-size:12px;font-weight:500;color:var(--muted);margin:0 0 8px}
+
+  input[type=range]{width:100%;accent-color:var(--signal);margin:0}
+  .seg{display:flex;border:1px solid var(--rule)}
+  .seg button{
+    flex:1;padding:7px 4px;font-family:inherit;font-size:12.5px;
+    background:#fff;border:0;border-right:1px solid var(--rule);color:var(--muted);cursor:pointer;
+  }
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed="true"]{background:var(--signal);color:#fff}
+  .seg button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
+
+  #fit{
+    display:block;width:100%;padding:9px;margin-top:10px;
+    font-family:inherit;font-size:13px;color:#fff;
+    background:var(--signal);border:1px solid var(--signal);cursor:pointer;
+  }
+  #fit:hover{background:#23503f}
+  #fit:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+  #coord{
+    padding:9px 18px 12px;border-top:1px solid var(--rule);
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    font-variant-numeric:tabular-nums;min-height:2.6em;line-height:1.5;
+  }
+
+  /* ---- states ---- */
+  #curtain{
+    position:absolute;inset:0;z-index:8;display:flex;
+    align-items:center;justify-content:center;padding:24px;
+    background:#DDE0DA;text-align:center;
+  }
+  #curtain.gone{display:none}
+  #curtain .inner{max-width:38ch}
+  #curtain p{margin:0;font-size:14px;color:var(--muted);line-height:1.8}
+  #curtain .bar{height:3px;background:var(--rule);margin:0 auto 18px;width:120px;overflow:hidden}
+  #curtain .bar i{display:block;height:100%;width:45%;background:var(--signal);animation:sweep 1.4s ease-in-out infinite}
+  @keyframes sweep{0%{transform:translateX(-110%)}100%{transform:translateX(330%)}}
+  @media (prefers-reduced-motion:reduce){#curtain .bar i{animation:none;width:100%}}
+  #curtain.bad .bar{display:none}
+  #curtain.bad p{color:var(--ink)}
+  #curtain code{font-family:var(--mono);font-size:12.5px;background:#EDEEE9;padding:1px 5px}
+
+  .ol-scale-line{background:rgba(247,247,244,.9);color:var(--ink);border:1px solid var(--rule);border-radius:0;bottom:12px;left:14px}
+  .ol-scale-line-inner{color:var(--ink);border-color:var(--ink);font-family:var(--mono);font-size:11px}
+  .ol-attribution{font-size:11px}
+  .ol-zoom{top:auto;bottom:44px;left:14px;border-radius:0}
+  .ol-zoom button{background:rgba(247,247,244,.92);color:var(--ink);border-radius:0;font-weight:400}
+  .ol-zoom button:hover,.ol-zoom button:focus{background:#fff;color:var(--signal)}
+
+  @media (max-width:640px){
+    #panel{top:auto;left:8px;right:8px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+    #toggle{display:block}
+    dl{padding-bottom:0}
+    #coord{display:none}
+    .ol-scale-line{bottom:auto;top:calc(12px + env(safe-area-inset-top,0px));left:12px}
+    .ol-zoom{top:calc(46px + env(safe-area-inset-top,0px));bottom:auto;left:12px}
+  }
+</style>
+</head>
+<body>
+
+<div id="map" tabindex="0"></div>
+
+<div id="panel" class="shut">
+  <div id="head">
+    <div class="txt">
+      <h1 id="title">圃場オルソ画像</h1>
+      <p id="sub"></p>
+    </div>
+    <button id="toggle" aria-expanded="false" aria-controls="body" title="詳細">＋</button>
+  </div>
+  <div id="body">
+    <dl id="meta"></dl>
+
+    <div class="ctl">
+      <h2><label for="opacity">画像の不透明度</label></h2>
+      <input type="range" id="opacity" min="0" max="100" value="100">
+    </div>
+
+    <div class="ctl">
+      <h2>背景</h2>
+      <div class="seg" role="group" aria-label="背景地図">
+        <button data-base="sat" aria-pressed="true">衛星</button>
+        <button data-base="osm" aria-pressed="false">地図</button>
+        <button data-base="none" aria-pressed="false">なし</button>
+      </div>
+      <button id="fit">圃場全体を表示</button>
+    </div>
+
+    <div id="coord">地図上にカーソルを置くと座標を表示します</div>
+  </div>
+</div>
+
+<div id="curtain">
+  <div class="inner">
+    <div class="bar"><i></i></div>
+    <p id="curtainMsg">画像を読み込んでいます</p>
+  </div>
+</div>
+
+<!-- 順序が重要: geotiff.js を ol.js より先に読み込む -->
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js"></script>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ========== ここだけ書き換えれば別の圃場に流用できます ========== */
+  var CONFIG = {
+    url:      "result_cog.tif",
+    title:    "圃場オルソ画像",
+    subtitle: "ドローン空撮・正射投影",
+    meta: [
+      ["撮影日",   "—"],
+      ["外接範囲", "197 m × 153 m"],
+      ["外接面積", "3.02 ha"],
+      ["地上分解能", "3.6 cm/px"],
+      ["座標系",   "WGS84 / EPSG:4326"],
+      ["中心座標", "5.660710, -0.554602"]
+    ],
+    // 画像の外側（飛行範囲外）を透明にする明るさのしきい値。
+    // 3バンドの合計を 0–3 に正規化した値。暗い土や影が抜ける場合は下げる。
+    alphaCutoff: 0.08
+  };
+  /* ============================================================== */
+
+  var $ = function(id){ return document.getElementById(id); };
+  var curtain = $("curtain");
+
+  function fail(msg){
+    curtain.classList.remove("gone");
+    curtain.classList.add("bad");
+    $("curtainMsg").innerHTML = msg;
+  }
+
+  if(typeof GeoTIFF === "undefined" || typeof ol === "undefined"){
+    fail("地図ライブラリを読み込めませんでした。<br>ネットワーク接続を確認してください。");
+    return;
+  }
+
+  /* ---------- panel ---------- */
+  $("title").textContent = CONFIG.title;
+  $("sub").textContent = CONFIG.subtitle;
+  CONFIG.meta.forEach(function(row){
+    var d = document.createElement("div");
+    var dt = document.createElement("dt"); dt.textContent = row[0];
+    var dd = document.createElement("dd"); dd.textContent = row[1];
+    d.appendChild(dt); d.appendChild(dd); $("meta").appendChild(d);
+  });
+
+  var panel = $("panel");
+  function openPanel(open){
+    panel.classList.toggle("shut", !open);
+    $("toggle").setAttribute("aria-expanded", String(open));
+    $("toggle").textContent = open ? "−" : "＋";
+  }
+  openPanel(window.innerWidth > 640);
+  $("toggle").addEventListener("click", function(){
+    openPanel(panel.classList.contains("shut"));
+  });
+
+  /* ---------- layers ---------- */
+  var osm = new ol.layer.Tile({
+    source: new ol.source.OSM(),
+    visible: false
+  });
+
+  var sat = new ol.layer.Tile({
+    source: new ol.source.XYZ({
+      url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      attributions: "衛星画像 © Esri, Maxar, Earthstar Geographics",
+      maxZoom: 19,
+      crossOrigin: "anonymous"
+    }),
+    visible: true
+  });
+
+  var cog = new ol.source.GeoTIFF({
+    sources: [{ url: CONFIG.url }],
+    interpolate: true
+  });
+
+  // 飛行範囲外は JPEG 圧縮の影響でわずかに 0 より明るい画素が残るため、
+  // 合計輝度にしきい値を当ててアルファを自前で作る。
+  var c = CONFIG.alphaCutoff;
+  var ortho = new ol.layer.WebGLTile({
+    source: cog,
+    style: {
+      color: [
+        "array",
+        ["band", 1], ["band", 2], ["band", 3],
+        ["case", [">", ["+", ["band", 1], ["band", 2], ["band", 3]], c], 1, 0]
+      ]
+    }
+  });
+
+  cog.on("error", function(){
+    fail("画像ファイルを読み込めませんでした。<br>" +
+         "<code>" + CONFIG.url + "</code> が同じ場所にあるか確認してください。");
+  });
+
+  /* ---------- map ---------- */
+  cog.getView().then(function(v){
+    var map = new ol.Map({
+      target: "map",
+      layers: [sat, osm, ortho],
+      view: new ol.View({
+        projection: v.projection,
+        center: v.center,
+        zoom: v.zoom,
+        maxZoom: (v.zoom || 18) + 5
+      }),
+      controls: ol.control.defaults.defaults({
+        attributionOptions: { collapsible: true }
+      }).extend([
+        new ol.control.ScaleLine({ units: "metric", minWidth: 80 })
+      ])
+    });
+
+    var extent = v.extent;
+    function fit(){
+      if(extent) map.getView().fit(extent, { padding: [40, 40, 40, 40], duration: 350 });
+    }
+    if(extent) map.getView().fit(extent, { padding: [40, 40, 40, 40] });
+    $("fit").addEventListener("click", fit);
+
+    // 最初のタイルが描画されたら幕を上げる
+    var lifted = false;
+    function lift(){
+      if(lifted) return;
+      lifted = true;
+      curtain.classList.add("gone");
+    }
+    map.once("rendercomplete", lift);
+    setTimeout(lift, 8000);
+
+    /* ---------- controls ---------- */
+    $("opacity").addEventListener("input", function(){
+      ortho.setOpacity(this.value / 100);
+    });
+
+    var segBtns = document.querySelectorAll(".seg button");
+    Array.prototype.forEach.call(segBtns, function(b){
+      b.addEventListener("click", function(){
+        Array.prototype.forEach.call(segBtns, function(o){
+          o.setAttribute("aria-pressed", String(o === b));
+        });
+        var k = b.dataset.base;
+        sat.setVisible(k === "sat");
+        osm.setVisible(k === "osm");
+      });
+    });
+
+    var coord = $("coord");
+    map.on("pointermove", function(e){
+      if(e.dragging) return;
+      var p = e.coordinate;
+      coord.textContent = p[1].toFixed(6) + ", " + p[0].toFixed(6);
+    });
+    map.getViewport().addEventListener("mouseleave", function(){
+      coord.textContent = "地図上にカーソルを置くと座標を表示します";
+    });
+
+  }).catch(function(err){
+    fail("画像ファイルを読み込めませんでした。<br>" +
+         "<code>" + CONFIG.url + "</code> が同じ場所にあるか確認してください。<br><br>" +
+         "<span style='font-family:var(--mono);font-size:12px'>" +
+         String(err && err.message ? err.message : err) + "</span>");
+  });
+
+})();
+</script>
+</body>
+</html>
